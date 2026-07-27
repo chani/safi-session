@@ -278,11 +278,12 @@ final class SessionService
 
     private function initClientMetadata(): void
     {
-        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? null;
+        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $uaString = is_string($rawUa) ? $rawUa : '';
         $rawIp = $this->resolveClientIp();
 
         $_SESSION['_safi_client'] = [
-            'ua' => is_string($rawUa) ? $rawUa : 'unknown',
+            'ua' => hash('sha256', $uaString),
             'ip' => $this->getIpSubnet($rawIp),
         ];
     }
@@ -293,15 +294,14 @@ final class SessionService
             return true;
         }
 
-        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? null;
+        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $currentUaHash = hash('sha256', is_string($rawUa) ? $rawUa : '');
         $currentIpSubnet = $this->getIpSubnet($this->resolveClientIp());
 
-        $currentUa = is_string($rawUa) ? $rawUa : 'unknown';
+        $storedUaHash = is_string($_SESSION['_safi_client']['ua'] ?? null) ? $_SESSION['_safi_client']['ua'] : '';
+        $storedIpSubnet = is_string($_SESSION['_safi_client']['ip'] ?? null) ? $_SESSION['_safi_client']['ip'] : '';
 
-        $storedUa = is_string($_SESSION['_safi_client']['ua'] ?? null) ? $_SESSION['_safi_client']['ua'] : '';
-        $storedIp = is_string($_SESSION['_safi_client']['ip'] ?? null) ? $_SESSION['_safi_client']['ip'] : '';
-
-        return $currentUa === $storedUa && $currentIpSubnet === $storedIp;
+        return hash_equals($storedUaHash, $currentUaHash) && $currentIpSubnet === $storedIpSubnet;
     }
 
     private function resolveClientIp(): string

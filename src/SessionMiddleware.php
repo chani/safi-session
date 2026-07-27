@@ -23,7 +23,7 @@ final readonly class SessionMiddleware implements MiddlewareInterface
      * @param bool $autoInferReadOnly Automatically start GET/HEAD/OPTIONS requests in 0ms read-only mode
      */
     public function __construct(
-        private SessionService $session,
+        private SessionServiceInterface $session,
         private array $options = [],
         private bool $autoInferReadOnly = true,
     ) {}

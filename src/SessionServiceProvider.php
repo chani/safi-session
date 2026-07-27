@@ -15,7 +15,6 @@ use Psr\Container\ContainerInterface;
 use Psr\Log\LoggerInterface;
 use Safi\Core\Contracts\ContainerRegistrarInterface;
 use Safi\Core\Contracts\ServiceProviderInterface;
-use Safi\Core\Services\SecurityService;
 use SessionHandlerInterface;
 
 final class SessionServiceProvider implements ServiceProviderInterface
@@ -33,13 +32,9 @@ final class SessionServiceProvider implements ServiceProviderInterface
                 ? $c->get(SessionHandlerInterface::class)
                 : null;
 
-            assert($handler === null || $handler instanceof SessionHandlerInterface);
-
-            $security = $c->has(SecurityService::class)
-                ? $c->get(SecurityService::class)
-                : null;
-
-            assert($security === null || $security instanceof SecurityService);
+            /** @var SessionHandlerInterface|null $handler */
+            $securityClass = 'Safi\\Core\\Services\\SecurityService';
+            $security = $c->has($securityClass) ? $c->get($securityClass) : null;
 
             return new SessionService(
                 $this->getLogger($c),

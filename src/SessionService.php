@@ -14,7 +14,7 @@ namespace Safi\Extensions\Session;
 use Psr\Log\LoggerInterface;
 use SessionHandlerInterface;
 
-final class SessionService
+final class SessionService implements SessionServiceInterface
 {
     private bool $started = false;
     private bool $dirty = false;
@@ -28,13 +28,18 @@ final class SessionService
         private readonly array $config = [],
         private readonly ?SessionHandlerInterface $handler = null,
         private readonly mixed $ipResolver = null,
-    ) {}
+    ) {
+        if ($this->ipResolver !== null && !is_callable($this->ipResolver) && !is_object($this->ipResolver)) {
+            throw new \InvalidArgumentException('ipResolver must be a callable, an object, or null.');
+        }
+    }
 
     /**
      * Starts the session with secure defaults, custom handler, and optional read-only mode.
      *
      * @param array<string, mixed> $options Runtime overrides (e.g., ['read_only' => true])
      */
+    #[\Override]
     public function start(array $options = []): void
     {
         if ($this->started) {
@@ -44,15 +49,7 @@ final class SessionService
         $readOnly = (bool) ($options['read_only'] ?? $this->config['read_only'] ?? false);
 
         if (PHP_SAPI === 'cli') {
-            $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
-            if (($this->config['verify_client'] ?? false) && !$this->verifyClientMetadata()) {
-                $this->logger->warning("Session client verification failed. Destroying session: {$sessionName}");
-                $this->destroy();
-                $this->initClientMetadata();
-            } elseif (!isset($_SESSION['_safi_client'])) {
-                $this->initClientMetadata();
-            }
-            $this->started = true;
+            $this->handleCliStart();
             return;
         }
 
@@ -61,6 +58,219 @@ final class SessionService
             return;
         }
 
+        $this->configureSessionSettings();
+
+        $startOptions = $readOnly ? ['read_and_close' => true] : [];
+        $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
+
+        if (!session_start($startOptions)) {
+            $this->logger->error('Failed to start HTTP session', ['session_name' => $sessionName]);
+            return;
+        }
+
+        $this->started = true;
+        $this->logger->info('Session started', [
+            'session_name' => $sessionName,
+            'read_only' => $readOnly,
+        ]);
+
+        $this->validateOrInitializeClient($sessionName, $startOptions);
+    }
+
+    /**
+     * Commits pending session modifications to disk/storage at request completion.
+     */
+    #[\Override]
+    public function commit(): void
+    {
+        if (!$this->started) {
+            return;
+        }
+
+        if (PHP_SAPI === 'cli') {
+            $this->dirty = false;
+            return;
+        }
+
+        if (!$this->dirty && session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+            $this->logger->info('Session active write lock released on commit.');
+            $this->dirty = false;
+            return;
+        }
+
+        if (!$this->dirty) {
+            return;
+        }
+
+        $sessionName = session_name();
+        if (is_string($sessionName)) {
+            $this->logger->info('Re-opening session write lock for deferred commit', ['session_name' => $sessionName]);
+            @session_start();
+            session_write_close();
+            $this->logger->info('Deferred session changes committed successfully.', ['session_name' => $sessionName]);
+        }
+
+        $this->dirty = false;
+    }
+
+    /**
+     * Returns the active session ID.
+     */
+    #[\Override]
+    public function getId(): string
+    {
+        $id = session_id();
+        return is_string($id) ? $id : '';
+    }
+
+    /**
+     * Closes the session manually and releases write locks immediately.
+     */
+    #[\Override]
+    public function close(): void
+    {
+        $this->commit();
+    }
+
+    /**
+     * Regenerates the session ID to mitigate session fixation attacks.
+     */
+    #[\Override]
+    public function regenerateId(bool $deleteOldSession = true): bool
+    {
+        if (PHP_SAPI === 'cli') {
+            return true;
+        }
+
+        if (session_status() !== PHP_SESSION_ACTIVE) {
+            @session_start();
+        }
+
+        $result = session_regenerate_id($deleteOldSession);
+        if ($result) {
+            $this->logger->info('Session ID regenerated.');
+            $this->dirty = true;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Destroys the session, clears session variables, and expires the session cookie.
+     */
+    #[\Override]
+    public function destroy(): bool
+    {
+        $_SESSION = [];
+        $this->dirty = false;
+
+        if (PHP_SAPI === 'cli') {
+            $this->started = false;
+            return true;
+        }
+
+        if (session_status() === PHP_SESSION_NONE) {
+            @session_start();
+        }
+
+        if (ini_get('session.use_cookies')) {
+            $name = session_name();
+            if (is_string($name)) {
+                $params = session_get_cookie_params();
+                setcookie(
+                    $name,
+                    '',
+                    time() - 42000,
+                    $params['path'],
+                    $params['domain'],
+                    $params['secure'],
+                    $params['httponly'],
+                );
+            }
+        }
+
+        $destroyed = session_destroy();
+        $this->started = false;
+
+        if ($destroyed) {
+            $this->logger->info('Session destroyed successfully.');
+        }
+
+        return $destroyed;
+    }
+
+    #[\Override]
+    public function clear(): void
+    {
+        $_SESSION = [];
+        $this->dirty = true;
+    }
+
+    #[\Override]
+    public function get(string $key, mixed $default = null): mixed
+    {
+        return $_SESSION[$key] ?? $default;
+    }
+
+    /**
+     * Retrieves an item from the session and deletes it atomically.
+     */
+    #[\Override]
+    public function pull(string $key, mixed $default = null): mixed
+    {
+        $value = $this->get($key, $default);
+        $this->remove($key);
+        return $value;
+    }
+
+    #[\Override]
+    public function set(string $key, mixed $value): void
+    {
+        $_SESSION[$key] = $value;
+        $this->dirty = true;
+    }
+
+    #[\Override]
+    public function has(string $key): bool
+    {
+        return isset($_SESSION[$key]);
+    }
+
+    #[\Override]
+    public function remove(string $key): void
+    {
+        unset($_SESSION[$key]);
+        $this->dirty = true;
+    }
+
+    #[\Override]
+    public function isDirty(): bool
+    {
+        return $this->dirty;
+    }
+
+    /**
+     * Handles session initialization specifically for CLI environments.
+     */
+    private function handleCliStart(): void
+    {
+        $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
+        if (($this->config['verify_client'] ?? false) && !$this->verifyClientMetadata()) {
+            $this->logger->warning('Session client verification failed. Destroying session', ['session_name' => $sessionName]);
+            $this->destroy();
+            $this->initClientMetadata();
+        } elseif (!isset($_SESSION['_safi_client'])) {
+            $this->initClientMetadata();
+        }
+        $this->started = true;
+    }
+
+    /**
+     * Applies runtime INI options and session cookie parameters.
+     */
+    private function configureSessionSettings(): void
+    {
         ini_set('session.use_strict_mode', '1');
 
         $rawProto = $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? null;
@@ -103,182 +313,34 @@ final class SessionService
             'httponly' => true,
             'samesite' => $sameSite,
         ]);
-
-        $startOptions = $readOnly ? ['read_and_close' => true] : [];
-
-        if (session_start($startOptions)) {
-            $this->started = true;
-            $this->logger->info("Session started: {$sessionName}" . ($readOnly ? ' (read-only deferred lock)' : ''));
-
-            if (($this->config['verify_client'] ?? false) && !$this->verifyClientMetadata()) {
-                $this->logger->warning("Session client verification failed. Destroying session: {$sessionName}");
-                $this->destroy();
-                session_start($startOptions);
-                $this->initClientMetadata();
-            } elseif (!isset($_SESSION['_safi_client'])) {
-                $this->initClientMetadata();
-            }
-        }
     }
 
     /**
-     * Commits pending session modifications to disk/storage at request completion.
+     * Verifies client fingerprint integrity or initializes client metadata if missing.
+     *
+     * @param array<string, mixed> $startOptions
      */
-    public function commit(): void
+    private function validateOrInitializeClient(string $sessionName, array $startOptions): void
     {
-        if (!$this->started) {
+        if (($this->config['verify_client'] ?? false) && !$this->verifyClientMetadata()) {
+            $this->logger->warning('Session client verification failed. Destroying session', ['session_name' => $sessionName]);
+            $this->destroy();
+            session_start($startOptions);
+            $this->initClientMetadata();
             return;
         }
 
-        if (PHP_SAPI === 'cli') {
-            $this->dirty = false;
-            return;
+        if (!isset($_SESSION['_safi_client'])) {
+            $this->initClientMetadata();
         }
-
-        if ($this->dirty && session_status() !== PHP_SESSION_ACTIVE) {
-            $sessionName = session_name();
-            if (is_string($sessionName)) {
-                $this->logger->info("Re-opening session write lock for deferred commit: {$sessionName}");
-                @session_start();
-                session_write_close();
-                $this->logger->info("Deferred session changes committed successfully.");
-            }
-        } elseif (session_status() === PHP_SESSION_ACTIVE) {
-            session_write_close();
-            $this->logger->info('Session active write lock released on commit.');
-        }
-
-        $this->dirty = false;
     }
 
     /**
-     * Returns the active session ID.
+     * Stores hashed client User-Agent and subnet information into session storage.
      */
-    public function getId(): string
-    {
-        $id = session_id();
-        return is_string($id) ? $id : '';
-    }
-
-    /**
-     * Closes the session manually and releases write locks immediately.
-     */
-    public function close(): void
-    {
-        $this->commit();
-    }
-
-    /**
-     * Regenerates the session ID to mitigate session fixation attacks.
-     */
-    public function regenerateId(bool $deleteOldSession = true): bool
-    {
-        if (PHP_SAPI === 'cli') {
-            return true;
-        }
-
-        if (session_status() !== PHP_SESSION_ACTIVE) {
-            @session_start();
-        }
-
-        $result = session_regenerate_id($deleteOldSession);
-        if ($result) {
-            $this->logger->info('Session ID regenerated.');
-            $this->dirty = true;
-        }
-
-        return $result;
-    }
-
-    /**
-     * Destroys the session, clears session variables, and expires the session cookie.
-     */
-    public function destroy(): bool
-    {
-        $_SESSION = [];
-        $this->dirty = false;
-
-        if (PHP_SAPI === 'cli') {
-            $this->started = false;
-            return true;
-        }
-
-        if (session_status() === PHP_SESSION_NONE) {
-            @session_start();
-        }
-
-        if (ini_get('session.use_cookies')) {
-            $name = session_name();
-            if (is_string($name)) {
-                $params = session_get_cookie_params();
-                setcookie(
-                    $name,
-                    '',
-                    time() - 42000,
-                    $params['path'],
-                    $params['domain'],
-                    $params['secure'],
-                    $params['httponly'],
-                );
-            }
-        }
-
-        $destroyed = session_destroy();
-        $this->started = false;
-
-        if ($destroyed) {
-            $this->logger->info('Session destroyed successfully.');
-        }
-
-        return $destroyed;
-    }
-
-    public function clear(): void
-    {
-        $_SESSION = [];
-        $this->dirty = true;
-    }
-
-    public function get(string $key, mixed $default = null): mixed
-    {
-        return $_SESSION[$key] ?? $default;
-    }
-
-    /**
-     * Retrieves an item from the session and deletes it atomically.
-     */
-    public function pull(string $key, mixed $default = null): mixed
-    {
-        $value = $this->get($key, $default);
-        $this->remove($key);
-        return $value;
-    }
-
-    public function set(string $key, mixed $value): void
-    {
-        $_SESSION[$key] = $value;
-        $this->dirty = true;
-    }
-
-    public function has(string $key): bool
-    {
-        return isset($_SESSION[$key]);
-    }
-
-    public function remove(string $key): void
-    {
-        unset($_SESSION[$key]);
-        $this->dirty = true;
-    }
-
-    public function isDirty(): bool
-    {
-        return $this->dirty;
-    }
-
     private function initClientMetadata(): void
     {
-        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? null;
         $uaString = is_string($rawUa) ? $rawUa : '';
         $rawIp = $this->resolveClientIp();
 
@@ -288,13 +350,16 @@ final class SessionService
         ];
     }
 
+    /**
+     * Compares active client fingerprint against session metadata in constant time.
+     */
     private function verifyClientMetadata(): bool
     {
         if (!isset($_SESSION['_safi_client']) || !is_array($_SESSION['_safi_client'])) {
             return true;
         }
 
-        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? '';
+        $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? null;
         $currentUaHash = hash('sha256', is_string($rawUa) ? $rawUa : '');
         $currentIpSubnet = $this->getIpSubnet($this->resolveClientIp());
 
@@ -304,6 +369,9 @@ final class SessionService
         return hash_equals($storedUaHash, $currentUaHash) && $currentIpSubnet === $storedIpSubnet;
     }
 
+    /**
+     * Resolves client IP address via callback, object interface, or server fallback.
+     */
     private function resolveClientIp(): string
     {
         if (is_callable($this->ipResolver)) {
@@ -321,6 +389,9 @@ final class SessionService
         return is_string($rawIp) ? $rawIp : '';
     }
 
+    /**
+     * Masks IP addresses to subnets (/24 IPv4, /64 IPv6) to allow mobile network switching.
+     */
     private function getIpSubnet(string $ip): string
     {
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {

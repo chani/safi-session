@@ -2,7 +2,7 @@
 
 /**
  * Safi Microframework - safi-session
- * @author Jean Bruenn
+ * @author Jean-Michel Brünn
  * @copyright 2026 All Rights Reserved
  * @see https://github.com/chani/safi-session
  */
@@ -32,9 +32,14 @@ final class SessionServiceProvider implements ServiceProviderInterface
                 ? $c->get(SessionHandlerInterface::class)
                 : null;
 
-            /** @var SessionHandlerInterface|null $handler */
+            assert($handler === null || $handler instanceof SessionHandlerInterface);
+
             $securityClass = 'Safi\\Core\\Services\\SecurityService';
-            $security = $c->has($securityClass) ? $c->get($securityClass) : null;
+
+            /** @var (callable(): string)|object|null $security */
+            $security = $c->has($securityClass)
+                ? $c->get($securityClass)
+                : null;
 
             return new SessionService(
                 $this->getLogger($c),

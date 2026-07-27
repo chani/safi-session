@@ -114,7 +114,7 @@ final class SessionServiceTest extends TestCase
         $logger->expects($this->atLeastOnce())->method('warning');
 
         $_SESSION['_safi_client'] = [
-            'ua' => 'LegitimateBrowser/1.0',
+            'ua' => hash('sha256', 'LegitimateBrowser/1.0'),
             'ip' => '192.168.1.0',
         ];
         $_SESSION['sensitive_data'] = 'secret';
@@ -126,7 +126,7 @@ final class SessionServiceTest extends TestCase
 
         $this->assertNull($session->get('sensitive_data'));
         $this->assertArrayHasKey('_safi_client', $_SESSION);
-        $this->assertSame('AttackerBrowser/2.0', $_SESSION['_safi_client']['ua'] ?? null);
+        $this->assertSame(hash('sha256', 'AttackerBrowser/2.0'), $_SESSION['_safi_client']['ua'] ?? null);
     }
 
     public function testProxyAwareSecurityServiceIntegration(): void

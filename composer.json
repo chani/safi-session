@@ -1,0 +1,50 @@
+{
+    "name": "chani/safi-session",
+    "description": "Pluggable, secure session management extension for Safi Microframework.",
+    "type": "library",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Jean Bruenn",
+            "role": "Developer"
+        }
+    ],
+    "require": {
+        "php": "^8.5",
+        "chani/safi-core": "^0.1.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^11.0",
+        "rector/rector": "^2.0",
+        "vimeo/psalm": "^6.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "Safi\\Extensions\\Session\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Safi\\Extensions\\Session\\Tests\\": "tests/",
+            "Safi\\Core\\": "../safi-core/src/"
+        }
+    },
+    "config": {
+        "optimize-autoloader": true
+    },
+    "version": "0.1.0",
+    "repositories": [
+        {
+            "type": "path",
+            "url": "../safi-*"
+        },
+        {
+            "type": "path",
+            "url": "../wajha-router"
+        }
+    ],
+    "minimum-stability": "dev",
+    "prefer-stable": true
+}

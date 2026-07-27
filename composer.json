@@ -1,24 +1,45 @@
 {
     "name": "chani/safi-session",
-    "description": "Pluggable, secure session management extension for Safi Microframework.",
+    "description": "Standalone, secure PHP session management library preventing AJAX race conditions and session hijacking.",
     "type": "library",
     "license": "MIT",
+    "keywords": [
+        "session",
+        "session-manager",
+        "session-middleware",
+        "psr-15",
+        "middleware",
+        "security",
+        "concurrency",
+        "safi"
+    ],
+    "homepage": "https://github.com/chani/safi-session",
     "authors": [
         {
-            "name": "Jean Bruenn",
+            "name": "Jean-Michel Brünn",
             "role": "Developer"
         }
     ],
+    "support": {
+        "issues": "https://github.com/chani/safi-session/issues",
+        "source": "https://github.com/chani/safi-session"
+    },
     "require": {
         "php": "^8.5",
-        "chani/safi-core": "^0.1.0"
+        "psr/log": "^3.0",
+        "psr/http-server-middleware": "^1.0",
+        "psr/http-message": "^2.0"
     },
     "require-dev": {
+        "chani/safi-core": "^0.1.0",
         "friendsofphp/php-cs-fixer": "^3.64",
         "phpstan/phpstan": "^2.0",
         "phpunit/phpunit": "^11.0",
         "rector/rector": "^2.0",
         "vimeo/psalm": "^6.0"
+    },
+    "suggest": {
+        "chani/safi-core": "Provides automatic integration with Safi Microframework and SecurityService."
     },
     "autoload": {
         "psr-4": {
@@ -34,7 +55,6 @@
     "config": {
         "optimize-autoloader": true
     },
-    "version": "0.1.0",
     "repositories": [
         {
             "type": "path",

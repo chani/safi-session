@@ -2,7 +2,7 @@
 
 /**
  * Safi Microframework - safi-session
- * @author Jean Bruenn
+ * @author Jean-Michel Brünn
  * @copyright 2026 All Rights Reserved
  * @see https://github.com/chani/safi-session
  */
@@ -12,21 +12,22 @@ declare(strict_types=1);
 namespace Safi\Extensions\Session;
 
 use Psr\Log\LoggerInterface;
-use Safi\Core\Services\SecurityService;
 use SessionHandlerInterface;
 
 final class SessionService
 {
     private bool $started = false;
+    private bool $dirty = false;
 
     /**
      * @param array<string, mixed> $config
+     * @param (callable(): string)|object|null $ipResolver Custom IP resolver callable or object with getClientIp() method
      */
     public function __construct(
         private readonly LoggerInterface $logger,
         private readonly array $config = [],
         private readonly ?SessionHandlerInterface $handler = null,
-        private readonly ?SecurityService $security = null,
+        private readonly mixed $ipResolver = null,
     ) {}
 
     /**
@@ -39,6 +40,8 @@ final class SessionService
         if ($this->started) {
             return;
         }
+
+        $readOnly = (bool) ($options['read_only'] ?? $this->config['read_only'] ?? false);
 
         if (PHP_SAPI === 'cli') {
             $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
@@ -69,14 +72,12 @@ final class SessionService
             ini_set('session.cookie_secure', '1');
         }
 
-        if ($this->handler instanceof \SessionHandlerInterface) {
+        if ($this->handler instanceof SessionHandlerInterface) {
             session_set_save_handler($this->handler, true);
         }
 
         $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
         session_name($sessionName);
-
-        $readOnly = (bool) ($options['read_only'] ?? $this->config['read_only'] ?? false);
 
         $lifetime = is_int($this->config['lifetime'] ?? null) ? $this->config['lifetime'] : 0;
         if ($lifetime > 0) {
@@ -107,7 +108,7 @@ final class SessionService
 
         if (session_start($startOptions)) {
             $this->started = true;
-            $this->logger->info("Session started: {$sessionName}" . ($readOnly ? ' (read-only)' : ''));
+            $this->logger->info("Session started: {$sessionName}" . ($readOnly ? ' (read-only deferred lock)' : ''));
 
             if (($this->config['verify_client'] ?? false) && !$this->verifyClientMetadata()) {
                 $this->logger->warning("Session client verification failed. Destroying session: {$sessionName}");
@@ -121,6 +122,36 @@ final class SessionService
     }
 
     /**
+     * Commits pending session modifications to disk/storage at request completion.
+     */
+    public function commit(): void
+    {
+        if (!$this->started) {
+            return;
+        }
+
+        if (PHP_SAPI === 'cli') {
+            $this->dirty = false;
+            return;
+        }
+
+        if ($this->dirty && session_status() !== PHP_SESSION_ACTIVE) {
+            $sessionName = session_name();
+            if (is_string($sessionName)) {
+                $this->logger->info("Re-opening session write lock for deferred commit: {$sessionName}");
+                @session_start();
+                session_write_close();
+                $this->logger->info("Deferred session changes committed successfully.");
+            }
+        } elseif (session_status() === PHP_SESSION_ACTIVE) {
+            session_write_close();
+            $this->logger->info('Session active write lock released on commit.');
+        }
+
+        $this->dirty = false;
+    }
+
+    /**
      * Returns the active session ID.
      */
     public function getId(): string
@@ -130,14 +161,11 @@ final class SessionService
     }
 
     /**
-     * Closes the session and releases the write lock early to prevent blocking parallel requests.
+     * Closes the session manually and releases write locks immediately.
      */
     public function close(): void
     {
-        if (session_status() === PHP_SESSION_ACTIVE) {
-            session_write_close();
-            $this->logger->info('Session write lock released.');
-        }
+        $this->commit();
     }
 
     /**
@@ -150,12 +178,13 @@ final class SessionService
         }
 
         if (session_status() !== PHP_SESSION_ACTIVE) {
-            return false;
+            @session_start();
         }
 
         $result = session_regenerate_id($deleteOldSession);
         if ($result) {
             $this->logger->info('Session ID regenerated.');
+            $this->dirty = true;
         }
 
         return $result;
@@ -167,6 +196,7 @@ final class SessionService
     public function destroy(): bool
     {
         $_SESSION = [];
+        $this->dirty = false;
 
         if (PHP_SAPI === 'cli') {
             $this->started = false;
@@ -174,7 +204,7 @@ final class SessionService
         }
 
         if (session_status() === PHP_SESSION_NONE) {
-            return true;
+            @session_start();
         }
 
         if (ini_get('session.use_cookies')) {
@@ -205,8 +235,8 @@ final class SessionService
 
     public function clear(): void
     {
-        $this->assertSessionIsWritable('clear');
         $_SESSION = [];
+        $this->dirty = true;
     }
 
     public function get(string $key, mixed $default = null): mixed
@@ -226,8 +256,8 @@ final class SessionService
 
     public function set(string $key, mixed $value): void
     {
-        $this->assertSessionIsWritable("set('{$key}')");
         $_SESSION[$key] = $value;
+        $this->dirty = true;
     }
 
     public function has(string $key): bool
@@ -237,15 +267,13 @@ final class SessionService
 
     public function remove(string $key): void
     {
-        $this->assertSessionIsWritable("remove('{$key}')");
         unset($_SESSION[$key]);
+        $this->dirty = true;
     }
 
-    private function assertSessionIsWritable(string $action): void
+    public function isDirty(): bool
     {
-        if (PHP_SAPI !== 'cli' && session_status() !== PHP_SESSION_ACTIVE) {
-            $this->logger->warning("Attempted to modify session via {$action} while write lock is closed or session is inactive.");
-        }
+        return $this->dirty;
     }
 
     private function initClientMetadata(): void
@@ -278,8 +306,15 @@ final class SessionService
 
     private function resolveClientIp(): string
     {
-        if ($this->security instanceof \Safi\Core\Services\SecurityService) {
-            return $this->security->getClientIp();
+        if (is_callable($this->ipResolver)) {
+            $resolved = ($this->ipResolver)();
+            return is_string($resolved) ? $resolved : '';
+        }
+
+        if (is_object($this->ipResolver) && method_exists($this->ipResolver, 'getClientIp')) {
+            /** @var mixed $resolved */
+            $resolved = $this->ipResolver->getClientIp();
+            return is_string($resolved) ? $resolved : '';
         }
 
         $rawIp = $_SERVER['REMOTE_ADDR'] ?? null;

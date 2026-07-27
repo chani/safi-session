@@ -1,57 +1,158 @@
-# Safi Microframework – Session Extension (`safi-session`)
+# Safi Session Extension (`safi-session`)
 
-A lightweight, secure, and pluggable session management extension for the Safi Microframework.
+`safi-session` is an isolated PHP 8.5+ session management library engineered to prevent request blocking during concurrent HTTP requests while enforcing client fingerprinting controls.
 
----
-
-## Architecture & Core Concepts
-
-### 1. Mitigating Session Blocking (Concurrency & Performance)
-
-#### The Problem in PHP
-By default, PHP locks the session file (or Redis key) when `session_start()` is called using an exclusive lock (`LOCK_EX`). This lock is scoped **per session ID** (per individual user) and persists for the entire duration of the HTTP request.
-
-While different visitors never block each other, concurrent requests from the **same user** (e.g., opening multiple tabs or sending simultaneous AJAX/Fetch calls in SPAs) will be queued and processed serially.
-
-#### Solutions in `safi-session`
-
-1. **Early Lock Release via `close()`**
-   Read or update session data early in your controller lifecycle, then immediately call `$session->close()`. This releases the session lock so long-running operations (such as database queries or external API calls) can execute without blocking concurrent requests from the same client.
-
-2. **Read-Only Sessions (`read_and_close`)**
-   For requests that only require reading session data (e.g., verifying if a user is authenticated), the session can be started in read-only mode. PHP reads the data into memory and immediately closes the write lock:
-   ```php
-   $session->start(['read_only' => true]);
-   ```
+It operates without required framework dependencies and can be integrated standalone, into any PSR-15 compliant HTTP pipeline, or as a component within the Safi Microframework.
 
 ---
 
-### 2. Authentication, Security & Utility Features
+## Technical Overview
 
-* **Session Fixation Protection (`regenerateId`)**: Call `$session->regenerateId(true)` upon login or privilege escalation to issue a fresh session identifier, preventing session fixation exploits.
-* **Clean Logout (`destroy`)**: Empties `$_SESSION`, clears the session cookie in the client browser with an expired timestamp, and invokes `session_destroy()`.
-* **Proxy-Aware Device Tracking (`verify_client`)**:
-  When `verify_client` is enabled, `safi-session` stores the client's `User-Agent` and IP subnet (`/24` for IPv4, `/64` for IPv6). If integrated with `safi-core`'s `SecurityService`, it respects trusted proxies (`X-Forwarded-For`, `CF-Connecting-IP`).
-* **Atomic Operations (`pull`)**: Atomically fetches and removes a key in a single step via `$session->pull('key')`.
+### 1. Concurrency Control & Read-Only Inference
+Standard PHP session management (`session_start()`) acquires an exclusive lock (`LOCK_EX`) on the session storage resource. Simultaneous HTTP requests sharing the same session identifier (such as multiple browser tabs or concurrent SPA fetch operations) are queued and executed serially until the lock is released.
+
+`safi-session` mitigates request blocking via two mechanisms:
+* **HTTP Method Inference:** `GET`, `HEAD`, and `OPTIONS` requests trigger `session_start(['read_and_close' => true])`. Session state is loaded into `$_SESSION` and the storage lock is released immediately at request start (0ms lock duration).
+* **Deferred Locking (Dirty State Tracking):** If session state is modified (`set()`, `remove()`, `clear()`) during a read-only request, modifications are buffered in memory. The storage lock is acquired briefly at request completion via `commit()` to persist changes.
+
+### 2. Client Hijacking & Subnet Protection
+When `verify_client` is enabled, session initialization records and validates client metadata:
+* **User-Agent Header:** Validated against the initial user agent string.
+* **IP Subnet Masking:** Network matching applies CIDR masking (`/24` for IPv4, `/64` for IPv6). This prevents session invalidation caused by standard mobile network handoffs or client-side IPv6 privacy extension address rotations.
 
 ---
 
-### 3. Pluggable Storage Handlers (`SessionHandlerInterface`)
+## Installation
 
-`safi-session` natively leverages PHP's built-in `SessionHandlerInterface`. When a service implementing this interface (such as a Redis or PDO handler) is registered in the DI container, it is automatically bound via `session_set_save_handler()` prior to starting the session.
+```bash
+composer require chani/safi-session
+```
 
 ---
 
-## Configuration Example
+## How-To Guides
+
+### How to Use Standalone in Native PHP
 
 ```php
-$config = [
-    'sessid'        => 'SAFI_SESSID',
-    'lifetime'      => 0,
-    'path'          => '/',
-    'domain'        => '',
-    'samesite'      => 'Lax',
-    'read_only'     => false,
-    'verify_client' => true, // Enables device tracking against hijacking
-];
+use Safi\Extensions\Session\SessionService;
+use Psr\Log\NullLogger;
+
+$session = new SessionService(
+    logger: new NullLogger(),
+    config: [
+        'sessid'        => 'APP_SESSID',
+        'lifetime'      => 86400,
+        'samesite'      => 'Lax',
+        'verify_client' => true,
+    ],
+    // Optional IP resolution callback or service object with getClientIp(): string
+    ipResolver: fn(): string => $_SERVER['HTTP_CF_CONNECTING_IP'] ?? $_SERVER['REMOTE_ADDR'] ?? ''
+);
+
+// Start session
+$session->start();
+
+// Mutate state
+$session->set('user_id', 101);
+
+// Read state
+$userId = $session->get('user_id');
+
+// Atomic fetch-and-delete
+$flash = $session->pull('flash_message');
+
+// Commit state modifications and release locks
+$session->commit();
 ```
+
+---
+
+### How to Integrate with PSR-15 Pipelines
+
+`SessionMiddleware` implements `Psr\Http\Server\MiddlewareInterface`. It can be attached to any PSR-15 compliant request handler or middleware stack:
+
+```php
+use Safi\Extensions\Session\SessionService;
+use Safi\Extensions\Session\SessionMiddleware;
+use Psr\Log\NullLogger;
+
+$sessionService = new SessionService(
+    logger: new NullLogger(),
+    config: ['verify_client' => true]
+);
+
+// Instantiate PSR-15 middleware with automatic read-only inference for GET requests
+$middleware = new SessionMiddleware($sessionService, autoInferReadOnly: true);
+
+// Add $middleware to your application pipeline.
+// The active SessionService instance is injected into request attributes as 'session'.
+```
+
+Inside a downstream request handler or controller:
+
+```php
+use Safi\Extensions\Session\SessionService;
+use Psr\Http\Message\ServerRequestInterface;
+
+public function handle(ServerRequestInterface $request)
+{
+    /** @var SessionService $session */
+    $session = $request->getAttribute('session');
+    $userId = $session->get('user_id');
+}
+```
+
+---
+
+### How to Integrate with Safi Microframework
+
+Register `SessionServiceProvider` in your composition root (`init.inc.php`):
+
+```php
+use Safi\Extensions\Session\SessionServiceProvider;
+
+$componentManager->bootProviders([
+    new SessionServiceProvider([
+        'sessid' => 'SAFI_SESSID',
+        'verify_client' => true,
+    ]),
+]);
+```
+
+---
+
+## Reference
+
+### `SessionService` API
+
+| Method | Signature | Description |
+| :--- | :--- | :--- |
+| `start()` | `start(array $options = []): void` | Initializes the session using configured parameters or runtime overrides. |
+| `get()` | `get(string $key, mixed$default = null): mixed` | Returns the stored value or fallback default. |
+| `set()` | `set(string $key, mixed$value): void` | Assigns a session value and marks state as dirty. |
+| `has()` | `has(string $key): bool` | Determines whether a key exists in session memory. |
+| `remove()` | `remove(string $key): void` | Unsets a key and marks state as dirty. |
+| `pull()` | `pull(string $key, mixed$default = null): mixed` | Fetches and unsets a key in a single step. |
+| `clear()` | `clear(): void` | Clears all session keys and marks state as dirty. |
+| `commit()` | `commit(): void` | Flushes dirty state changes to persistent storage and releases locks. |
+| `regenerateId()` | `regenerateId(bool $deleteOld = true): bool` | Issues a new session identifier to prevent session fixation. |
+| `destroy()` | `destroy(): bool` | Clears variables, expires client cookies, and destroys active storage. |
+
+### Configuration Parameters
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `sessid` | `string` | `'SAFI_SESSID'` | Session cookie identifier name. |
+| `lifetime` | `int` | `0` | Cookie max lifetime in seconds (`0` = session duration). |
+| `path` | `string` | `'/'` | Path scoping for session cookie. |
+| `domain` | `string` | `''` | Domain scoping for session cookie. |
+| `samesite` | `string` | `'Lax'` | SameSite cookie attribute (`'Lax'`, `'Strict'`, `'None'`). |
+| `read_only` | `bool` | `false` | Global default read-only flag. |
+| `verify_client` | `bool` | `false` | Enables User-Agent fingerprinting and subnet validation. |
+
+---
+
+## License
+
+Distributed under the **MIT License**. Author: **Jean-Michel Brünn**

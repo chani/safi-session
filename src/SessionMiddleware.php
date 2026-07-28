@@ -11,10 +11,10 @@ declare(strict_types=1);
 
 namespace Safi\Extensions\Session;
 
-use Psr\Http\Message\ResponseInterface;
-use Psr\Http\Message\ServerRequestInterface;
-use Psr\Http\Server\MiddlewareInterface;
-use Psr\Http\Server\RequestHandlerInterface;
+use Safi\Core\Http\Context;
+use Safi\Core\Http\MiddlewareInterface;
+use Safi\Core\Http\RequestHandlerInterface;
+use Safi\Core\Http\Response;
 
 final readonly class SessionMiddleware implements MiddlewareInterface
 {
@@ -29,12 +29,12 @@ final readonly class SessionMiddleware implements MiddlewareInterface
     ) {}
 
     #[\Override]
-    public function process(ServerRequestInterface $request, RequestHandlerInterface $handler): ResponseInterface
+    public function process(Context $context, RequestHandlerInterface $handler): Response
     {
         $options = $this->options;
 
         if ($this->autoInferReadOnly && !isset($options['read_only'])) {
-            $method = strtoupper($request->getMethod());
+            $method = strtoupper($context->request->getMethod());
             if (in_array($method, ['GET', 'HEAD', 'OPTIONS'], true)) {
                 $options['read_only'] = true;
             }
@@ -42,10 +42,10 @@ final readonly class SessionMiddleware implements MiddlewareInterface
 
         $this->session->start($options);
 
-        $request = $request->withAttribute('session', $this->session);
+        $context->request->setAttribute('session', $this->session);
 
         try {
-            return $handler->handle($request);
+            return $handler->handle($context);
         } finally {
             $this->session->commit();
         }

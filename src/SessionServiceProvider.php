@@ -53,9 +53,7 @@ final class SessionServiceProvider implements ServiceProviderInterface
     #[\Override]
     public function boot(ContainerInterface $container): void
     {
-        /** @var SessionService $session */
-        $session = $container->get(SessionService::class);
-        $session->start();
+        // Session lifecycle is lazily/non-blockingly managed via SessionMiddleware.
     }
 
     private function getLogger(ContainerInterface $container): LoggerInterface

@@ -355,7 +355,8 @@ final class SessionService implements SessionServiceInterface
      */
     private function verifyClientMetadata(): bool
     {
-        if (!isset($_SESSION['_safi_client']) || !is_array($_SESSION['_safi_client'])) {
+        $client = $_SESSION['_safi_client'] ?? null;
+        if (!is_array($client)) {
             return true;
         }
 
@@ -363,8 +364,8 @@ final class SessionService implements SessionServiceInterface
         $currentUaHash = hash('sha256', is_string($rawUa) ? $rawUa : '');
         $currentIpSubnet = $this->getIpSubnet($this->resolveClientIp());
 
-        $storedUaHash = is_string($_SESSION['_safi_client']['ua'] ?? null) ? $_SESSION['_safi_client']['ua'] : '';
-        $storedIpSubnet = is_string($_SESSION['_safi_client']['ip'] ?? null) ? $_SESSION['_safi_client']['ip'] : '';
+        $storedUaHash = is_string($client['ua'] ?? null) ? $client['ua'] : '';
+        $storedIpSubnet = is_string($client['ip'] ?? null) ? $client['ip'] : '';
 
         return hash_equals($storedUaHash, $currentUaHash) && $currentIpSubnet === $storedIpSubnet;
     }

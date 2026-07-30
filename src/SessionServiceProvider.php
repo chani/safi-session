@@ -37,7 +37,7 @@ final class SessionServiceProvider implements ServiceProviderInterface
             $securityClass = 'Safi\\Core\\Services\\SecurityService';
             $security = $c->has($securityClass) ? $c->get($securityClass) : null;
 
-            // Pure DI: Closure kennt nur die fertige Instanz $security, nicht mehr den Container $c!
+            // Pure DI: Closure holds resolved instance $security without referencing container $c
             $ipResolver = static function () use ($security): string {
                 if (is_object($security) && method_exists($security, 'getClientIp')) {
                     $ip = $security->getClientIp();
@@ -57,7 +57,11 @@ final class SessionServiceProvider implements ServiceProviderInterface
 
         $registrar->set(
             SessionServiceInterface::class,
-            static fn(ContainerInterface $c): SessionServiceInterface => $c->get(SessionService::class)
+            static function (ContainerInterface $c): SessionServiceInterface {
+                $service = $c->get(SessionService::class);
+                assert($service instanceof SessionServiceInterface);
+                return $service;
+            },
         );
     }
 

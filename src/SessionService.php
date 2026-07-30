@@ -34,11 +34,6 @@ final class SessionService implements SessionServiceInterface
         }
     }
 
-    /**
-     * Starts the session with secure defaults, custom handler, and optional read-only mode.
-     *
-     * @param array<string, mixed> $options Runtime overrides (e.g., ['read_only' => true])
-     */
     #[\Override]
     public function start(array $options = []): void
     {
@@ -77,9 +72,6 @@ final class SessionService implements SessionServiceInterface
         $this->validateOrInitializeClient($sessionName, $startOptions);
     }
 
-    /**
-     * Commits pending session modifications to disk/storage at request completion.
-     */
     #[\Override]
     public function commit(): void
     {
@@ -106,7 +98,9 @@ final class SessionService implements SessionServiceInterface
         $sessionName = session_name();
         if (is_string($sessionName)) {
             $this->logger->info('Re-opening session write lock for deferred commit', ['session_name' => $sessionName]);
+            $snapshot = $_SESSION;
             @session_start();
+            $_SESSION = $snapshot;
             session_write_close();
             $this->logger->info('Deferred session changes committed successfully.', ['session_name' => $sessionName]);
         }
@@ -114,9 +108,6 @@ final class SessionService implements SessionServiceInterface
         $this->dirty = false;
     }
 
-    /**
-     * Returns the active session ID.
-     */
     #[\Override]
     public function getId(): string
     {
@@ -124,18 +115,12 @@ final class SessionService implements SessionServiceInterface
         return is_string($id) ? $id : '';
     }
 
-    /**
-     * Closes the session manually and releases write locks immediately.
-     */
     #[\Override]
     public function close(): void
     {
         $this->commit();
     }
 
-    /**
-     * Regenerates the session ID to mitigate session fixation attacks.
-     */
     #[\Override]
     public function regenerateId(bool $deleteOldSession = true): bool
     {
@@ -144,7 +129,9 @@ final class SessionService implements SessionServiceInterface
         }
 
         if (session_status() !== PHP_SESSION_ACTIVE) {
+            $snapshot = $_SESSION;
             @session_start();
+            $_SESSION = $snapshot;
         }
 
         $result = session_regenerate_id($deleteOldSession);
@@ -156,9 +143,6 @@ final class SessionService implements SessionServiceInterface
         return $result;
     }
 
-    /**
-     * Destroys the session, clears session variables, and expires the session cookie.
-     */
     #[\Override]
     public function destroy(): bool
     {
@@ -213,9 +197,6 @@ final class SessionService implements SessionServiceInterface
         return $_SESSION[$key] ?? $default;
     }
 
-    /**
-     * Retrieves an item from the session and deletes it atomically.
-     */
     #[\Override]
     public function pull(string $key, mixed $default = null): mixed
     {
@@ -250,9 +231,6 @@ final class SessionService implements SessionServiceInterface
         return $this->dirty;
     }
 
-    /**
-     * Handles session initialization specifically for CLI environments.
-     */
     private function handleCliStart(): void
     {
         $sessionName = is_string($this->config['sessid'] ?? null) ? $this->config['sessid'] : 'SAFI_SESSID';
@@ -266,9 +244,6 @@ final class SessionService implements SessionServiceInterface
         $this->started = true;
     }
 
-    /**
-     * Applies runtime INI options and session cookie parameters.
-     */
     private function configureSessionSettings(): void
     {
         ini_set('session.use_strict_mode', '1');
@@ -316,8 +291,6 @@ final class SessionService implements SessionServiceInterface
     }
 
     /**
-     * Verifies client fingerprint integrity or initializes client metadata if missing.
-     *
      * @param array<string, mixed> $startOptions
      */
     private function validateOrInitializeClient(string $sessionName, array $startOptions): void
@@ -335,9 +308,6 @@ final class SessionService implements SessionServiceInterface
         }
     }
 
-    /**
-     * Stores hashed client User-Agent and subnet information into session storage.
-     */
     private function initClientMetadata(): void
     {
         $rawUa = $_SERVER['HTTP_USER_AGENT'] ?? null;
@@ -350,9 +320,6 @@ final class SessionService implements SessionServiceInterface
         ];
     }
 
-    /**
-     * Compares active client fingerprint against session metadata in constant time.
-     */
     private function verifyClientMetadata(): bool
     {
         $client = $_SESSION['_safi_client'] ?? null;
@@ -370,9 +337,6 @@ final class SessionService implements SessionServiceInterface
         return hash_equals($storedUaHash, $currentUaHash) && $currentIpSubnet === $storedIpSubnet;
     }
 
-    /**
-     * Resolves client IP address via callback, object interface, or server fallback.
-     */
     private function resolveClientIp(): string
     {
         if (is_callable($this->ipResolver)) {
@@ -390,9 +354,6 @@ final class SessionService implements SessionServiceInterface
         return is_string($rawIp) ? $rawIp : '';
     }
 
-    /**
-     * Masks IP addresses to subnets (/24 IPv4, /64 IPv6) to allow mobile network switching.
-     */
     private function getIpSubnet(string $ip): string
     {
         if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {

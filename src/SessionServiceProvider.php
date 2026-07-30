@@ -35,26 +35,34 @@ final class SessionServiceProvider implements ServiceProviderInterface
             assert($handler === null || $handler instanceof SessionHandlerInterface);
 
             $securityClass = 'Safi\\Core\\Services\\SecurityService';
+            $security = $c->has($securityClass) ? $c->get($securityClass) : null;
 
-            /** @var (callable(): string)|object|null $security */
-            $security = $c->has($securityClass)
-                ? $c->get($securityClass)
-                : null;
+            // Pure DI: Closure kennt nur die fertige Instanz $security, nicht mehr den Container $c!
+            $ipResolver = static function () use ($security): string {
+                if (is_object($security) && method_exists($security, 'getClientIp')) {
+                    $ip = $security->getClientIp();
+                    return is_string($ip) ? $ip : '';
+                }
+                $raw = $_SERVER['REMOTE_ADDR'] ?? null;
+                return is_string($raw) ? $raw : '';
+            };
 
             return new SessionService(
                 $this->getLogger($c),
                 $this->config,
                 $handler,
-                $security,
+                $ipResolver,
             );
         });
+
+        $registrar->set(
+            SessionServiceInterface::class,
+            static fn(ContainerInterface $c): SessionServiceInterface => $c->get(SessionService::class)
+        );
     }
 
     #[\Override]
-    public function boot(ContainerInterface $container): void
-    {
-        // Session lifecycle is lazily/non-blockingly managed via SessionMiddleware.
-    }
+    public function boot(ContainerInterface $container): void {}
 
     private function getLogger(ContainerInterface $container): LoggerInterface
     {

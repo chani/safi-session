@@ -1,12 +1,5 @@
 <?php
 
-/**
- * Safi Microframework - safi-session
- * @author Jean-Michel Brünn
- * @copyright 2026 All Rights Reserved
- * @see https://github.com/chani/safi-session
- */
-
 declare(strict_types=1);
 
 namespace Safi\Extensions\Session;
@@ -21,7 +14,6 @@ final class SessionService implements SessionServiceInterface
 
     /**
      * @param array<string, mixed> $config
-     * @param (callable(): string)|object|null $ipResolver Custom IP resolver callable or object with getClientIp() method
      */
     public function __construct(
         private readonly LoggerInterface $logger,
@@ -84,7 +76,7 @@ final class SessionService implements SessionServiceInterface
             return;
         }
 
-        if (!$this->dirty && session_status() === PHP_SESSION_ACTIVE) {
+        if (session_status() === PHP_SESSION_ACTIVE) {
             session_write_close();
             $this->logger->info('Session active write lock released on commit.');
             $this->dirty = false;
@@ -345,7 +337,6 @@ final class SessionService implements SessionServiceInterface
         }
 
         if (is_object($this->ipResolver) && method_exists($this->ipResolver, 'getClientIp')) {
-            /** @var mixed $resolved */
             $resolved = $this->ipResolver->getClientIp();
             return is_string($resolved) ? $resolved : '';
         }
